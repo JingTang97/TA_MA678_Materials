@@ -1,0 +1,351 @@
+---
+title: "MA678 Discussion"
+date: "Nov 13, 2019"
+output: learnr::tutorial
+runtime: shiny_prerendered
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load("learn","foreign","knitr",
+               "mlmRev","lme4","rstanarm","ggplot2",
+               "tidyverse","data.table","reshape2","rstan")
+```
+
+## Introduction to Stan
+Stan is a C++ library for Bayesian inference. It is based on the No-U-Turn sampler (NUTS), which is used for estimating the posterior distribution according to a user-specified model and data. Performing an analysis using Stan involves the following steps:        
+ 
+- Specify the statistical model using the the Stan modeling language. This is typically done through a dedicated .stan file.    
+- Prepare the data that is to be fed to the model.    
+- Sample from the posterior distribution using the stan function.    
+- Analyze the results.    
+
+## RStan with Multilevel Model
+
+### How to use RStan
+The following program blocks are used in Stan:    
+*data*: for specifying the data that is conditioned upon using Bayes rule    
+*transformed data*: for preprocessing the data    
+*parameters (required)*: for specifying the parameters of the model    
+*transformed parameters*: for parameter processing before computing the posterior     
+*model (required)*: for specifying the model itself     
+*generated quantities*: for postprocessing the results     
+
+### Data source
+```{r}
+# load data as character
+df <- fread('https://www.datascienceblog.net/data-sets/rats.txt')
+print(head(df)) # each row corresponds to an individual rat
+```
+    
+We first need to investigate the data:
+```{r}
+ddf <- cbind(melt(df), Group = rep(paste0("Rat", seq(1, nrow(df))), 5))
+ggplot(ddf, aes(x = variable, y = value, group = Group)) + geom_line() + geom_point()
+```
+    
+The data show a linear growth trend that is quite similar for different rats. However, we also see that the rats have different initial weights, which require different intercepts, as well as different growth rates, which require different slopes. Thus, a hierarchical model seems appropriate.
+
+### Specification of the model
+The model can be specified as follows:    
+
+$$Y_{ij} \sim Normal(\alpha_i+\beta_i(x_j-\bar x),\sigma_Y)$$
+$$\alpha_i \sim Normal(\mu_\alpha, \sigma_\alpha)$$
+$$\beta_i \sim Normal(\mu_\beta, \sigma_\beta)$$
+    
+where the intercept for the i-th rat is indicated by $\alpha_i$ and the slope by $\beta_i$. Note that the measurement times are centered around $\bar x =22$ is the median measurement (day 22) of the time-series data.    
+
+We can now specify the model and store it in a txt file called rats.stan:    
+
+*rats.stan*:    
+data {
+    int<lower=0> N; // the number of rats
+    int<lower=0> T; // the number of time points
+    real x[T]; // day at which measurement was taken
+    real y[N,T]; // matrix of weight times time
+    real xbar; // the median number of days in the time series
+}    
+parameters {
+  real alpha[N]; // the intercepts of rat weights
+  real beta[N]; // the slopes of rat weights
+
+  real mu_alpha; // the mean intercept
+  real mu_beta; // the mean slope
+
+  real<lower=0> sigmasq_y;
+  real<lower=0> sigmasq_alpha;
+  real<lower=0> sigmasq_beta;
+}    
+transformed parameters {
+  real<lower=0> sigma_y; // sd of rat weight
+  real<lower=0> sigma_alpha; // sd of intercept distribution
+  real<lower=0> sigma_beta; // sd of slope distribution
+
+  sigma_y <- sqrt(sigmasq_y);
+  sigma_alpha <- sqrt(sigmasq_alpha);
+  sigma_beta <- sqrt(sigmasq_beta);
+}    
+model {
+  mu_alpha ~ normal(0, 100); // non-informative prior
+  mu_beta ~ normal(0, 100); // non-informative prior
+  sigmasq_y ~ inv_gamma(0.001, 0.001); // conjugate prior of normal
+  sigmasq_alpha ~ inv_gamma(0.001, 0.001); // conjugate prior of normal
+  sigmasq_beta ~ inv_gamma(0.001, 0.001); // conjugate prior of normal
+  alpha ~ normal(mu_alpha, sigma_alpha); // all intercepts are normal 
+  beta ~ normal(mu_beta, sigma_beta);  // all slopes are normal
+  for (n in 1:N) // for each sample
+    for (t in 1:T)  // for each time point
+      y[n,t] ~ normal(alpha[n] + beta[n] * (x[t] - xbar), sigma_y);
+
+}    
+generated quantities {
+  // determine the intercept at time 0 (birth weight)
+  real alpha0;
+  alpha0 <- mu_alpha - xbar * mu_beta;
+}    
+
+    
+Note that the model code estimates the variance (the sigmasq variables) rather than the standard deviations. Additionally, the generated quantities block explicitly calculates $\alpha_0$, the intercept at time 0, that is, the weight of the rats at birth. We could have also calculated any other quantity in the generated quantities block, for example, the estimated weight of the rats at different points in time.
+    
+
+### Data preparation
+To prepare the data for the model, we first extract the measurement points as numeric values and then encode everything in a list structure:
+    
+```{r}
+days <- as.numeric(regmatches(colnames(df), regexpr("[0-9]*$", colnames(df))))
+rat.data <- list(N = nrow(df), T = ncol(df), x = days,
+                 y = df, xbar = median(days)) 
+```
+
+    
+### Fit the regression model
+We can now fit the Bayesian hierarchical regression model for the rat weight data set:    
+```{r}
+rat.model <- stan(
+  file = "rats.stan",
+  data = rat.data)
+# model contains estimates for intercepts (alpha) and slopes (beta)
+```
+
+### Prediction 
+Having determined $\alpha$ and $\beta$ for each rat, we can now estimate the weight of individual rats at arbitrary points in time. Here, we are interested in finding the weight of the rats from day 0 to day 100.    
+
+```{r}
+predict.rat.weight <- function(rat.model, newdays) {
+    # newdays: vector of time points to consider
+    rat.fit <- extract(rat.model)
+    alpha <- rat.fit$alpha
+    beta <- rat.fit$beta
+    xbar <- 22 # hardcoded since not stored in rat.model
+    y <- lapply(newdays, function(t) alpha + beta * (t - 22))
+    return(y)
+}
+newdays <- seq(0, 100)
+pred.weights <- predict.rat.weight(rat.model, newdays)
+# extract means and standard deviations from posterior samples
+pred.means <- lapply(pred.weights, function(x) apply(x, 2, mean))
+pred.sd <- lapply(pred.weights, function(x) apply(x, 2, sd)) 
+# create plotting data frame with 95% CI interval from sd
+pred.df <- data.frame(Weight = unlist(pred.means), 
+              Upr_Weight = unlist(pred.means) + 1.96 * unlist(pred.sd), 
+              Lwr_Weight = unlist(pred.means) - 1.96 * unlist(pred.sd), 
+              Day = unlist(lapply(newdays, function(x) rep(x, 30))),
+              Rat = rep(seq(1,30), length(newdays)))
+# predicted mean weight of all rats
+ggplot(pred.df, aes(x = Day, y = Weight, group = Rat)) +
+    geom_line()
+```
+
+```{r}
+# predictions for selected rats
+sel.rats <- c(9, 8, 29)
+ggplot(pred.df[pred.df$Rat %in% sel.rats, ], 
+       aes(x = Day, y = Weight, group = Rat, 
+           ymin = Lwr_Weight, ymax = Upr_Weight)) +   
+    geom_line()  +
+    geom_errorbar(width=0.2, size=0.5, color="blue")
+```
+    
+In contrast to the original data, the estimates from the model are smooth because each curve follows a linear model. Investigating the confidence intervals shown in the last plot, we can see that the variance estimates are reasonable. We are confident about the rat weights at the time of sampling (days 8 to 36) but the uncertainty increases the further we move away from the sampled region.
+
+### Estimate plot
+```{r}
+# specify the params to plot via pars
+plot(rat.model, pars = "alpha", main="Confidence interval for alpha estimates")
+plot(rat.model, pars = "beta", main="Confidence interval for beta estimates")
+```
+    
+The black lines indicate the 95% intervals, while the red lines indicate the 80% intervals. The circles indicate the estimate of the mean.
+
+
+### MCMC diagnostics
+By plotting the trace of the sampling procedure, we can identify whether anything has gone wrong during sampling. This could for example be the case if the chain stays in one place for too long or makes too many steps in one direction. We can plot the traces of the four chains used in our model with the traceplot function:    
+```{r}
+traceplot(rat.model, pars = c("mu_alpha"), inc_warmup = TRUE, nrow = 2)
+traceplot(rat.model, pars = c("mu_beta"), inc_warmup = TRUE, nrow = 2)
+traceplot(rat.model, pars = c("sigmasq_alpha"), inc_warmup = TRUE, nrow = 2)
+traceplot(rat.model, pars = c("sigmasq_beta"), inc_warmup = TRUE, nrow = 2)
+
+```
+
+
+## Rstanarm with Multilevel Model
+
+### Data Source
+From package 'mlmRev'. General Certificate of Secondary Education (GCSE) exam scores of 1,905 students from 73 schools in England on a science subject.    
+
+  - `school`: school identifier    
+  - `student`：student identifier    
+  - `gender`: gender of a student (M: Male, F: Female)    
+  - `written`: total score on written paper    
+  - `course`: total score on coursework paper    
+
+
+### Data Pre-processing
+
+#### Data summary
+```{r}
+data(Gcsemv, package = "mlmRev")
+summary(Gcsemv)
+```
+
+Two components of the exam were recorded as outcome variables: written paper and course work. In this tutorial, only the total score on the courework paper (course) will be analyzed. As seen above, there some of the observations have missing values for certain covariates. While we do not subset the data to only include complete cases to demonstrate that rstanarm automatically drops these observations, it is generally good practice to manually do so if required.    
+
+
+#### Factorization and Subset
+```{r}
+Gcsemv$female <- relevel(Gcsemv$gender, "M")
+
+# Use only total score on coursework paper 
+GCSE <- Gcsemv %>% 
+  select(school, student, female, course)
+```
+
+The rstanarm package automates several data preprocessing steps making its use very similar to that of lme4 in the following way.    
+
+- Input: 'rstanarm' is able to take a data frame as input.    
+
+- Missing Data: 'rstanarm' automatically discards observations with NA values for any variable used in the model.     
+
+- Identifiers: 'rstanarm' does not require identifiers to be sequential. We do suggest that it is good practice for all cluster and unit identifiers, as well as categorical variables be stored as factors. This applies to using lme4 as much as it does to rstanarm. One can check the structure of the variables by using the str() function.    
+
+```{r}
+str(GCSE)
+```
+
+### Bayesian Inference & Prediction
+
+#### Bayesian Approach
+A fully Bayesian approach also provides reasonable inferences in these instances with the added benefit of accounting for all the uncertainty in the parameter estimates when predicting the varying intercepts and slopes, and their associated uncertainty.    
+
+#### Fitting LMM using 'rstanarm'
+
+```{r}
+M1_stanlmer <- stan_lmer(formula = course ~ 1 + (1 | school), 
+                         data = GCSE,
+                         seed = 349)
+```
+
+This stan_lmer() function is similar in syntax to lmer() but rather than performing maximum likelihood estimation, Bayesian estimation is performed via MCMC. As each step in the MCMC estimation approach involves random draws from the parameter space, we include a seed option to ensure that each time the code is run, stan_lmer outputs the same results.    
+
+#### Prior Distributions
+Here, we use the default prior distributions for the hyperparameters in stan_lmer by not specifying any prior options in stan_lmer() function. The default priors are intended to be weakly informative in that they provide moderate regularization and help stabilize computation. It should be noted that the authors of rstanarm suggest not relying on rstanarm to specify the default prior for a model, but rather, to specify the priors explicitly even if they are indeed the current default, as updates to the package may result in different defaults.    
+```{r}
+# Obtain a summary of priors used
+prior_summary(object = M1_stanlmer)
+```
+
+```{r}
+# Obtain SD of outcome
+sd(GCSE$course, na.rm = TRUE)
+```
+
+As seen above, the scales of the priors for μα and σy are set to 163.21 and 16.32 respectively after rescaling. Since the default prior for the intercept is normal with a scale parameter of 10, the rescaled prior is also normal but with a scale parameter of $scale×SD(y)=10×16.321=163.21$. Similarly, since the default prior for $\sigma_{y}$ is exponential with a rate parameter of 1 (or equivalently, scale parameter $scale=\frac{1}{rate}=1$), the rescaled prior is likewise exponential with a scale parameter of $scale×SD(y)=1×16.321=16.32$.    
+
+
+#### Output from stan_lmer
+
+##### Estimates
+```{r}
+print(M1_stanlmer, digits = 2)
+```
+
+Here, the point estimate of $\mu_{\alpha}$ from stan_lmer is 73.75 and this corresponds to the median of the posterior draws. This is similar to the ML estimate obtained from lmer. The point estimate for $\sigma_{\alpha}$ from stan_lmer is 8.88, which is larger than the ML estimate (8.67). This discrepancy may be partly because the ML approach in lmer() does not take into account the uncertainty in μα when estimating $\sigma_{\alpha}$. The REML approach (8.75) in lmer(), as mentioned previously, does in fact account for this uncertainty.    
+
+When using stan_lmer(), standard errors are obtained by considering the median absolute deviation (MAD) of each draw from the median of those draws. It is well known that ML tends to underestimate uncertainties because it relies on point estimates of hyperparameters. Full Bayes, on the other hand, propagates the uncertainty in the hyperparameters throughout all levels of the model and provides more appropriate estimates of uncertainty. See also W. J. Browne, Draper, and others (2006) for further discussion.    
+
+
+##### Posterior &  Credible Intervals
+While the use of the median and the MAD of the posterior draws for estimation and inference are the default outputs from rstanarm, we may instead prefer to use the mean and the standard deviation of the posterior distribution instead. Additionally, we may be interested in credible intervals, a concept unique to Bayesian statistics that is the analogue to confidence intervals in frequentist statistics. Unlike the latter, the 95% credible intervals have a 95% probability of containing the true value of the parameter given the data. This 95% credible interval is typically obtained by considering the 2.5th to 97.5th percentiles of the distribution of posterior draws.    
+
+```{r}
+summary(M1_stanlmer, 
+        pars = c("(Intercept)", "sigma", "Sigma[school:(Intercept),(Intercept)]"),
+        probs = c(0.025, 0.975),
+        digits = 2)
+```
+
+It is worthwhile to note that when using the summary method, the estimate for the standard deviation $\sigma_{y}$ is the the mean of the posterior draws of the parameter. This is in contrast to the median of the posterior draws that we obtain when using the print method. One advantage of using the median is that the estimate for $\sigma_{y}^{2}$ is simply the square of the estimate for $\sigma_{y}$ if the number of samples is odd. This is not true when using the mean. In this case, and more generally when we need to evaluate other functions of the parameters, we need to access the posterior draws directly.    
+
+
+#### Two more models
+```{r}
+M2_stanlmer <- stan_lmer(formula = course ~ female + (1 | school), 
+                         data = GCSE, 
+                         prior = normal(location = 0, 
+                                        scale = 100,
+                                        autoscale = FALSE),
+                         prior_intercept = normal(location = 0, 
+                                                  scale = 100, 
+                                                  autoscale = FALSE),
+                         seed = 349)
+
+```
+
+```{r}
+prior_summary(object = M2_stanlmer)
+```
+
+```{r}
+M2_stanlmer
+```
+
+The point estimates of $\mu_{\alpha}$, $\beta$, and $\sigma_{y}$ are almost identical to the ML estimates from the lmer() fit. However, partly because ML ignores the uncertainty about $\mu_{\alpha}$ when estimating $\sigma_{\alpha}$, the Bayesian estimate for $\sigma_{\alpha}$ (9.0) is larger than the ML estimate (8.8), as with Model 1.    
+
+
+
+```{r}
+M3_stanlmer <- stan_lmer(formula = course ~ female + (1 + female | school), 
+                         data = GCSE,
+                         seed = 349)
+prior_summary(object = M3_stanlmer)
+```
+
+```{r}
+M3_stanlmer
+```
+
+Here, we notice that the point estimates for $\mu_{\alpha}$ and $\sigma_{y}$ are identical to the ML estimates from lmer() fit. The point estimate for $\beta$ is slightly different in this Model. Furthermore, as in the previous two models, the Bayesian estimate for $\sigma_{\alpha}$ (10.3) is larger than the ML estimate (10.15). Additionally, the Bayesian estimates for $\sigma_{\beta}$ (7.1) and $\rho$ (-0.48) are larger than the corresponding ML estimates (6.92 and -0.52 respectively).    
+
+
+## Reference
+https://www.ssc.wisc.edu/sscc/pubs/MM/MM_DiagInfer.html
+
+https://ademos.people.uic.edu/Chapter18.html
+
+https://bbolker.github.io/morelia_2018/notes/mixedlab.html
+
+https://arxiv.org/pdf/1502.06988.pdf
+
+http://www.bodowinter.com/tutorial/bw_LME_tutorial2.pdf
+
+https://www.ihrp.uic.edu/files/Hedeker-Marginalization-2018jan9.pdf
+
+https://mc-stan.org/users/documentation/case-studies/tutorial_rstanarm.html
+
+
+
+
+
+
+
