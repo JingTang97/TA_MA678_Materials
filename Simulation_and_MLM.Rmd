@@ -1,0 +1,404 @@
+---
+title: "MLM2 and Simulation"
+author: "Skyler Xu, Shannon Rong"
+date: "11/4/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load("foreign","arm","lme4","effects","stargazer","car","MASS","ggplot2","texreg","Hmisc","glmmADMB")
+
+```
+
+# Simulation 
+Simulation is usefull in probability model, statistical inference, model checking. And especially when you are interested in some complex functions of the variables. Simulation does not require asymptotic normality attribute as most statistical tests do.
+
+## Simulation Examples
+
+### Probability Model Simulation
+2 people shooting basketball at the same time, they stop when they both miss it. Person A has a cance of 60% to make a shot, Person B has 70%. The 2 people are independent, trails of either of them are independent as well. Simulate this process.  
+
+```{r}
+sim_size = 1000
+Ns = rep(NA, sim_size)   
+
+for (i in 1:sim_size) {
+  Sa <- NULL
+  Sb <- NULL
+  repeat{
+   Sa <- append(Sa, rbinom(1, size = 1, prob = 0.6))
+   Sb <- append(Sb, rbinom(1, size = 1, prob = 0.7))
+   n <- length(Sa)
+   if(Sa[n]==Sb[n] & Sa[n]==0 ) {Ns[i]= n; break}
+  }
+}
+
+hist(Ns)
+```
+
+### Statistical Inference Simulation
+Construct the Predictive Interval: We fit a linear model with response variable “earning” on its log-scale.    
+
+```{r}
+height <- foreign::read.dta("heights.dta")
+height <- height[height$earn>0 & !is.na(height$earn),]
+height$z.height <- (height$height - mean(height$height) ) / sd(height$height)
+height$log.earn <- log(height$earn)
+height$male <- 1*(height$sex==1)
+
+fit <- lm(log.earn ~ height + male + height : male, data = height)
+
+summary(fit)
+```  
+$$log(earning) = 8.388+0.017⋅height−0.079⋅male+0.007⋅height:male    $$  
+Use simulation to calculate predictive interval:
+```{r}
+y_m <- predict(fit,  newdata = data.frame(height=68, male=1))
+X_m <- matrix(c(1, 68, 1, 68), nrow = 1)
+sigma <- summary(fit)$sigma
+sd_y <- sqrt(1+X_m %*% vcov(fit) %*% t(X_m)) * sigma  # sd for y_hat 
+
+sim_y <- rnorm(1000, mean = y_m, sd = sd_y)  # use simulation to get log_earning
+earning <- exp(sim_y)    
+quantile(earning, probs = c(.025,.975))  # get 95% CI for earning 
+```
+
+```{r}
+hist(sim_y)
+hist(earning)
+```
+
+### Model Checking with Simulation
+Use poisson model and quasi-poisson model as examples. Basic idea: simulate predicted outcome and compare them with observed outsome.
+```{r}
+# read data
+patents<-read.dta("patentdata.dta")
+
+# data manipulation 
+## Delete extreme observations
+patents <- patents[which(patents$nclaims<=60),]
+patents <- patents[which(patents$ncit<=15),]
+
+## Generate centered variables
+patents$yearc <- (patents$year - mean(patents$year)) #/ sd(patents$year) 
+patents$ncountryc <- patents$ncountry - mean(patents$ncountry)
+patents$nclaimsc <- patents$nclaims - mean(patents$nclaims)
+
+# Generate centered polynomials
+patents$year2 <- patents$year^2
+patents$year2c <- patents$year2 - mean(patents$year2)
+patents$year3 <- patents$year^3
+patents$year3c <- patents$year3 - mean(patents$year3)
+
+patents$ncountry2 <- patents$ncountry^2
+patents$ncountry2c <- patents$ncountry2 - mean(patents$ncountry2)
+patents$ncountry3 <- patents$ncountry^3
+patents$ncountry3c <- patents$ncountry3 - mean(patents$ncountry3)
+
+patents$nclaims2 <- patents$nclaims^2
+patents$nclaims2c <- patents$nclaims2 - mean(patents$nclaims2)
+patents$nclaims3 <- patents$nclaims^3
+patents$nclaims3c <- patents$nclaims3 - mean(patents$nclaims3)
+
+                     
+patents <- patents[,c("ncit","yearc", 
+                      "ncountryc", "nclaimsc",
+                      "ncountry2c", "nclaims2", 
+                      "ncountry3c", "nclaims3c",
+                      "biopharm", "ustwin",
+                      "patus", "patgsgr", "opp")]
+
+
+
+poi.m <- glm(ncit ~ yearc + ncountryc + nclaimsc + 
+               ncountry2c + nclaims2 + ncountry3c + nclaims3c +
+               factor(biopharm) + factor(ustwin) + 
+               factor(patus) +factor(patgsgr) + factor(opp) , 
+            family=poisson, data=patents)
+
+quapoi.m <- glm(ncit ~ yearc + ncountryc + nclaimsc + 
+               ncountry2c + nclaims2 + ncountry3c + nclaims3c +
+               factor(biopharm) + factor(ustwin) + 
+               factor(patus) +factor(patgsgr) + factor(opp) , 
+            family=quasipoisson, data=patents)
+```
+```{r}
+n_sim = 1000
+
+X <- patents[,-1]
+X <- cbind(1, X)  # 1 is for intercept 
+X <- as.matrix(X)
+```
+```{r}
+poi.sim <- sim(poi.m, n_sim)
+coef_poi.sim <- poi.sim@coef  # a 1000 x 9 matrix for coefficients 
+
+
+
+# empty matrix to hold simulated predicted y for poisson model 
+pred_y.poi <- matrix(NA, nrow = nrow(patents), ncol = n_sim, 
+                    dimnames = list(NULL, paste0(seq(1:n_sim),"th-sim" )) )
+
+for (i in 1:n_sim) {  # use each generated coefficient sets to simulate predicted outcome "ncit"
+  
+  mu <- exp(X %*% coef_poi.sim[i,])
+  pred_y.poi[,i]  <- rpois(n=nrow(X), lambda = mu)
+
+}
+
+
+
+hist(patents$ncit, freq = FALSE)
+for(j in 1:n_sim) {
+  lines(density(pred_y.poi[,j]), col=3)
+}
+```
+
+# Multilevel Linear Model and Multilevel Logistic Model
+## Multilevel Linear Model 
+
+### Simulate a school data
+```{r}
+set.seed(42)
+nrich=40
+npoor=160
+#Paramaters
+S.F.Rich=-2 # setting paramaeters for the Friends variable in the Rich schools
+S.F.Poor=6 # setting parameters for the Friends variable in the Poor schools
+
+S.G.Rich=.7 # setting parameters for the GPA variable in the Rich schools
+S.G.Poor=.7 # setting parameters for the GPA variable in the Poor schools
+# Rich Schools
+# School 1
+X1 <- rnorm(nrich, 10, 2) # number of friends
+Z1 <- runif(nrich, 1.0, 4.0) # GPA
+Y1 <- S.F.Rich*X1 + S.G.Rich*Z1 + 80 + rnorm(nrich, sd= 5) # Our equation to create Y
+
+# School 2
+X2 <- rnorm(nrich, 10, 2) # number of friends
+Z2 <- runif(nrich, 1.0, 4.0) # GPA
+Y2 <- S.F.Rich*X2 + S.G.Rich*Z2 + 75 + rnorm(nrich, sd= 5)
+
+# School 3
+X3 <- rnorm(nrich, 10, 2) # number of friends
+Z3 <- runif(nrich, 1.0, 4.0) # GPA
+Y3 <- S.F.Rich*X3 + S.G.Rich*Z3 +90 + rnorm(nrich, sd= 5)
+
+# Poor Schools
+# School 4
+X4 <- rnorm(npoor, 5, 2) #number of friends
+Z4 <- runif(npoor, 1.0, 4.0) #GPA
+Y4 <- S.F.Poor*X4 + S.G.Poor*Z4 + 35 + rnorm(npoor, sd = 10)
+
+# School 5
+X5 <- rnorm(npoor, 5, 2) #number of friends
+Z5 <- runif(npoor, 1.0, 4.0) #GPA
+Y5 <- S.F.Poor*X5 + S.G.Poor*Z5 + 40 + rnorm(npoor, sd = 10)
+
+# School 6
+X6 <- rnorm(npoor, 5, 2) #number of friends
+Z6 <- runif(npoor, 1.0, 4.0) #GPA
+Y6 <- S.F.Poor*X6 + S.G.Poor*Z6 + 50 + rnorm(npoor, sd = 10)
+
+# The 3 Rich Schools:
+Student.Data.School.1<-data.frame(Happiness=Y1, Friends=X1, GPA=Z1)
+Student.Data.School.2<-data.frame(Happiness=Y2, Friends=X2, GPA=Z2)
+Student.Data.School.3<-data.frame(Happiness=Y3, Friends=X3, GPA=Z3)
+
+# The 3 Poor Schools:
+Student.Data.School.4<-data.frame(Happiness=Y4, Friends=X4, GPA=Z4)
+Student.Data.School.5<-data.frame(Happiness=Y5, Friends=X5, GPA=Z5)
+Student.Data.School.6<-data.frame(Happiness=Y6, Friends=X6, GPA=Z6)
+
+All.Schools.Data <- rbind(Student.Data.School.1, Student.Data.School.2, Student.Data.School.3, Student.Data.School.4, Student.Data.School.5, Student.Data.School.6) 
+head(All.Schools.Data)
+
+# Adding the subject variable (Student ID)
+All.Schools.Data$StudentID<-seq(1:nrow(All.Schools.Data))
+# Did it work?
+head(All.Schools.Data)
+
+All.Schools.Data$School<-c(rep(1, nrich), rep(2,nrich), rep(3, nrich), rep(4, npoor), 
+                           rep(5, npoor), rep(6, npoor))
+```
+
+### Plotting on school data 
+
+*Plot on Friends*
+```{r}
+theme_set(theme_bw(base_size = 12, base_family = "")) 
+
+# Friends
+Model.Plot.Friends <-ggplot(data = All.Schools.Data, aes(x = Friends, y=Happiness,group=School))+   
+  facet_grid( ~ School)+    
+  geom_point(aes(colour = School))+ 
+  geom_smooth(method = "lm", se = TRUE, aes(colour = School))+  
+  xlab("Friends")+ylab("Happiness")+    
+  theme(legend.position = "none")   
+Model.Plot.Friends
+```
+
+*Plot on GPA*
+```{r}
+Model.Plot.GPA <-ggplot(data = All.Schools.Data, aes(x =GPA, y=Happiness,group=School))+    
+  facet_grid( ~ School)+    
+  geom_point(aes(colour = School))+ 
+  geom_smooth(method = "lm", se = TRUE, aes(colour = School))+  
+  xlab("GPA")+ylab("Happiness")+    
+  theme(legend.position = "none")   
+Model.Plot.GPA
+```
+
+### Simple Linear Regression for comparison
+```{r}
+All.Schools.Data$Friends.C<-scale(All.Schools.Data$Friends, scale = FALSE)[,]
+All.Schools.Data$GPA.C<-scale(All.Schools.Data$GPA, scale = FALSE)[,]
+
+# Rich Schools
+School.Rich.Reg.Model<-lm(Happiness ~ Friends.C + GPA.C, data = subset(All.Schools.Data, School<4))
+summary(School.Rich.Reg.Model)
+
+# Poor Schools
+School.Poor.Reg.Model<-lm(Happiness ~ Friends.C + GPA.C, data = subset(All.Schools.Data, School>3))
+summary(School.Poor.Reg.Model)
+```
+
+Notice, we have a negative, significant effect for Friends but no effect for GPA for rich schools. And we have a positive, significant effect of Friends and no effect of GPA for poor schools.    
+
+The regular regression did not reflect what was happening in each school type. It gave us a positive effect (Friends) when only poor schools had a positive effect. Collapsing across school types in this case was not ideal because different things were happening within each school type, compromising the generalizability of the findings.
+Another way to put this, the regular (lm) regression indicates that the more friends a student has, the happier they are, but looking closer this is not the case in all schools (and is, in fact, the opposite in some). If you were trying to generalize your findings or use them to argue for/show a need for an intervention, your results would be misleading and could cause problems
+
+### Multilevel Linear Model 
+```{r}
+Null<-lmer(Happiness ~ 1 # This simply means Happiness predicted by the intercept
+                  +(1|School), # each school gets its own intercept 
+                  data=All.Schools.Data, REML = FALSE)
+summary(Null)
+
+ICC.Model<-function(Model.Name) {
+  tau.Null<-as.numeric(lapply(summary(Model.Name)$varcor, diag))
+  sigma.Null <- as.numeric(attr(summary(Model.Name)$varcor, "sc")^2)
+  ICC.Null <- tau.Null/(tau.Null+sigma.Null)
+  return(ICC.Null)
+}
+
+ICC.Model(Null)
+```
+We examine the intra-class correlation (ICC) to determine if multi-level modeling is the correct choice for our analysis. The ICC measures the degree of clustering in our data and answers the question, “How much does my Level 2 predict the total variance of my study?” If your ICC is greater than 0, you have a multi-level study.    
+
+Our ICC is greater than 0, meaning we were correct to think of this as a multi-level problem.    
+
+The results indicate that a student’s GPA does not have an effect on their Happiness when controlling for Level 2 fluctuations in Happiness.
+
+```{r}
+The.Model.2<-lmer(Happiness ~ Friends.C + GPA.C 
+                  +(1+Friends.C|School), # each school gets its own intercept, and Friends can vary as a function of the school.
+                data=All.Schools.Data, REML = FALSE)
+summary(The.Model.2)
+```
+The results indicate that the number of Friends a student has does not have an effect on Happiness when controlling for the random effects of Level 2 influences.    
+
+*What the results mean?*     
+In our regular (lm) regression, Friends had a significant effect, b = 1.40 (p < .001). However, in our mixed (lmer) regression, Friends had a larger (2.16), but non-significant effect.
+Why is this important? The goal of multi-level modeling is to draw a conclusion about the general sample that you have while controlling for differences you are not trying to explain (in this example, rich vs. poor). Not properly controlling for these differences, which you may often not know are there, will increase your chance of Type I error. Because the effect of Friends was different in different schools, it makes sense that the multi-level model (MLM) did not show a significant effect. In the present example, our MLM gave us a more accurate interpretation - that no main effect of Friends existed for all schools generally. 
+
+## Multilevel Logistic Model 
+```{r}
+load("culcita.RData")
+summary(culcita_dat)
+
+ggplot(culcita_dat,aes(x=ttt,y=predation))+
+  stat_summary(fun.data=mean_cl_boot,size=2)+
+  ylim(c(0,1))
+```
+The basic conclusion is that symbionts have a definite protective effect; the combination of two symbionts seems slightly more protective than a single symbiont.
+
+### glmer
+```{r}
+cmod_lme4_L <- glmer(predation~ttt+(1|block),data=culcita_dat,
+               family=binomial)
+summary(cmod_lme4_L)
+```
+It would be nice to fit the model with a random effect of treatments across blocks as well, but it takes a long time and warns that it has failed to converge …
+```{r}
+cmod_lme4_block <- update(cmod_lme4_L,.~ttt+(ttt|block))
+```
+```{r}
+plot(cmod_lme4_L,id=0.05,idLabels=~.obs)
+plot(cmod_lme4_L,ylim=c(-1.5,1),type=c("p","smooth"))
+```
+The only thing that the default diagnostic plot tells us is that observation #20 has a (very) extreme residual (we use idLabels=~.obs to get outliers labelled by their observation number; otherwise, by default, they are labelled by their groups); if we use ylim=c(-1.5,1) to limit the y-range, we get (on the right) the usual not-very-informative residuals plot expected from binary data.
+
+# Multilevel Model Prediction 
+## A Simple Example with Multilevel Linear Model
+```{r}
+set.seed(1)
+
+# Define a model y = mx + c, with a random effect of person on both m and c
+m <- 1
+c <- 3
+people <- c("alice", "bob", "charlie", "doris")
+df.true.params <- data.frame(person = people, m = m + rnorm(4), c = c + rnorm(4))
+
+# Observe each person from x = 0 to x = 3; use that person's random effect, but 
+# add an error term independently to every observation.
+obs.points <- 0:3
+df.observed <- data.frame(person = rep(people, 4), x = sort(rep(obs.points, 4)))
+df.observed$y <- rep(df.true.params$m, 4) * df.observed$x +
+  rep(df.true.params$c, 4) + rnorm(16) # 4 people * 4 observations each
+df.observed
+
+# Plot everyone's observations
+library(ggplot2)
+plot <- ggplot(data=df.observed, aes(x=x, y=y, colour=person)) + geom_point()
+plot
+
+# Fit an LMM to the observations
+library(lme4)
+lmm <- lmer(data = df.observed, y ~ x + (x | person))
+summary(lmm)
+
+# Make predictions for y = mx + c for an unspecified person (i.e. the population
+# expectation).
+df.predicted <- data.frame(person = NA, x = obs.points)
+predict.fun <- function(my.lmm) {
+  predict(my.lmm, newdata = df.predicted, re.form = NA)   # This is predict.merMod 
+}
+df.predicted$ml.value <- predict.fun(lmm)
+
+# Make predictions in 100 bootstraps of the LMM. Use these to get confidence
+# intervals.
+lmm.boots <- bootMer(lmm, predict.fun, nsim = 100)
+df.predicted <- cbind(df.predicted, confint(lmm.boots))
+df.predicted
+
+# Plot the ML prediction and its confidence intervals
+plot + geom_line(data=df.predicted, aes(x=obs.points, y=df.predicted$ml.value)) +
+  geom_ribbon(data=df.predicted, aes(x=obs.points, ymin=df.predicted$`2.5 %`,
+                                          ymax=df.predicted$`97.5 %`),
+                   fill="gray", alpha=0.5, inherit.aes = FALSE)
+```
+
+## Explanation of Function Prediction in LMER4
+**Fitted Value**    
+p0 <- predict(gm1)                                     
+    
+**Fitted Values, unconditional, level 0**
+p1 <- predict(gm1,re.form=NA)            
+    
+**New data, taking all random effects**
+p2 <- predict(gm1,newdata)              
+    
+**New data, unconditional, level 0**
+p3 <- predict(gm1,newdata,re.form=NA)      
+    
+**Resepecify random effect**
+p4 <- predict(gm1,newdata,re.form= ~(1|RE)) 
+
+Newdata must contain columns corresponding to all of the grouping variables and random effects used in the original model, even if not all are used in prediction; however, they can be safely set to NA in this case.     
+
+**Predict with new level of data**    
+p5 <- predict(gm1, newdata, allow.new.levels = TRUE)      
+
+If TRUE, then the prediction will use the unconditional (population-level) values for data with previously unobserved levels (or NAs).
