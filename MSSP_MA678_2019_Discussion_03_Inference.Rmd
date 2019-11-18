@@ -1,0 +1,328 @@
+---
+title: "Statistical Inference"
+date: "09/18/2019"
+output: learnr::tutorial
+runtime: shiny_prerendered
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load("learnr","foreign","arm","pwr","ggplot2","dplyr","knitr")
+```
+
+# Statistical Inference
+## 1. Inference in Regression
+
+---
+
+### 1.1 Regression - Interpretation
+#### Munich rent Index Data
+
+  - `rent`: Net rent per month (in Euro)
+  - `rentsqm`：Net rent per month per square meter (in Euro)
+  - `area`: Living area in square meters
+  - `yearc`: Year of construction
+  - `location`: Quality of location according to an expert assessment
+    - `1` = averyearc location 
+    - `2` = good location 
+    - `3` = top location
+  - `district`: District in Munich
+
+```{r}
+rents<-read.dta("rent99.dta")
+regout <- lm(rent ~ yearc + factor(location) * area + district, data=rents) 
+summary(regout) 
+```
+
+##### Continuous Variable: yearc
+  - `unit`: year
+  - `scale`: original scale
+  - `response & scale`: Net rent per month (in Euro)
+  - `association`: no causation
+  
+##### categorical Variable: location
+  - `level`: ordered, Quality of location according to an expert assessment
+  - `response & scale`: Net rent per month (in Euro)
+  - `association`: no causation
+  
+##### Interaction
+  - fix one
+  - recalculate coefficient
+  - interpret
+
+
+### 1.2 Regression - Confidence Interval Interpretation
+```{r,fig.width=8,fig.height=5,fig.align='center'}
+coefplot(regout)
+predict(regout, data.frame(yearc=1970, location=1, district=180, area=21),interval='confidence') 
+```
+
+#### Frequentist v.s. Bayesian
+- Frequentist: fixed parameters 
+- Bayesian: parameters as random variables
+
+### 1.3 Pratice
+```{r}
+regout1 <- lm(log(rentsqm) ~ yearc + factor(location) * area + district, data=rents) 
+summary(regout1)
+```
+
+```{r rg1, echo=FALSE}
+question("How to interpret the coefficient of 'yearc'?",
+  answer("With other predictors fixed, one additional year of construction corresponds to 0.00645 increase on average in Net rent per month (in Euro). "),
+  answer("With other predictors fixed, one additional year of construction corresponds to 0.00645 increase on average in net rent per month per square meter (in Euro) on log scale. ", correct = TRUE),
+  answer("With other predictors fixed, one additional year of construction causes 0.00645 increase on average in net rent per month per square meter (in Euro) on log scale."),
+  allow_retry = TRUE
+)
+```
+
+```{r rg2, echo=FALSE}
+question("What's the equation when location is 2?",
+  answer("log(rentsqm) = -10.39 + 0.006452 * yearc - 0.005039 * area - 0.00003344 * district"),
+  answer("log(rentsqm) = -10.4312 + 0.006452 * yearc - 0.005039 * area - 0.00003344 * district"),
+  answer("log(rentsqm) = -10.4312 + 0.006452 * yearc - 0.003208 * area - 0.00003344 * district", correct=TRUE),
+  allow_retry = TRUE
+)
+```
+
+```{r}
+kable(confint(regout1),digits=2)
+```
+
+```{r rg3, echo=FALSE}
+question("How to interpret the confidence interval of 'area'?",
+  answer("The probability that coefficient of 'area' fall in the interval [-0.01,0] is 0.95."),
+  answer("The probability that coefficient of 'area' below -0.01 is 0.025, higher than 0 is 0.975."),
+  answer("Among 100 experiments, 95 experiments are expected for confidence interval contain true coeffcient of 'area'.", correct=TRUE),
+  allow_retry = TRUE
+)
+```
+
+
+
+## 2. Hypothesis Tests
+
+---
+
+### 2.1 Tests in Regression
+
+```{r}
+summary(regout) 
+```
+
+- t value & p-value in regression table is doing a t-test.
+
+```{r tst1, echo=FALSE}
+question("What is the null hypothesis for t-test on coefficient of 'area'?",
+  answer("beta > 0"),
+  answer("beta = 0", correct = TRUE),
+  answer("beta < 0"),
+  allow_retry = TRUE
+)
+```
+
+- p-value: under the null hypothesis, the probability that the statistical summary (such as the sample mean difference between two groups) would be equal to, or more extreme than, the actual observed results.
+
+- F-test: test the significance of a group of variables. (ANOVA)
+
+
+### 2.2 Test Function
+
+#### Two Sample T-test
+
+#### Paired T-test: 
+
+Paired t-test analysis is performed as follow:
+
+1. Calculate the difference (d) between each pair of value
+2. Compute the mean (m) and the standard deviation (s) of d
+3. Compare the average difference to 0. If there is any significant difference between the two pairs of samples, then the mean of d (m) is expected to be far from 0.
+
+#### Example: mice weight dataset
+```{r}
+before <- c(200.1, 190.9, 192.7, 213, 241.4, 196.9, 172.2, 185.5, 205.2, 193.7)
+after <- c(392.9, 393.2, 345.1, 393, 434, 427.9, 422, 383.9, 392.3, 352.2)
+t.test(before, after, paired = TRUE, alternative = "two.sided")
+```
+
+```{r tst2, echo=FALSE}
+question("Does the experiment has significant effect on mice weight?",
+  answer("No"),
+  answer("Yes", correct = TRUE),
+  allow_retry = TRUE
+)
+```
+ 
+
+
+## 3. Classical Power Analysis
+
+---
+
+### Case: Genetic Counseling
+
+#### Background
+
+Our client is a student in pharmacology. His research focuses on examining the differences in gene expression in brain tissue among healthy patients and patients with Alzheimer’s disease (AD).
+
+He came to the MSSP consulting center with a dataset consisting of gene expression data from two healthy brain samples and five from AD brain samples. With such a small sample size, he was finding difficulty in drawing comparisons between the two groups in question.
+
+To more readily investigate the difference between these brain samples, our client was requesting additional tissue samples from the NIH and was seeking statistical justification for this request. Thus, he would like us to conduct a formal power analysis to ensure that his experiment is meaningful.
+
+
+#### Power Analaysis: Two Sample T-Test
+
+In our analysis of the differences in gene expressions for healthy brains compared to gene expression in AD brains, we turn to the two-sample t-test as a formal approach to test the following hypothesis.
+
+$H_0$: The mean values of two groups (healthy brain's gene expression and AD brain's gene expression) are the same.
+
+$H_a$: The mean values of two groups are not the same.
+
+
+The test statistic for this test is given by  
+$$t={\bar\mu_1-\bar\mu_2\over{\sqrt{{s_1^2\over n_1}+{s_2^2\over n_1}}}}$$
+
+where 
+ $$\mu_1\: = mean\; value\; of\; gene\;expression\;of\;the\;healthy\;brains$$
+ $$\mu_2\: = mean\; value\; of\;gene\;expression\;of\;the\;AD\;brains$$
+ 
+ $s^2$ is the pooled sample variance and $n_1$ and $n_2$ are the sample sizes of the two groups. As we collect more and more data, this test statistics follows a Student T distribution with $n_1$ + $n_2$ - 2 degrees of freedom. The assumptions for the the t-test are give below. The following power analysis is only valid if these assumptions are met.
+
+1. The first assumption made regarding t-tests concerns the scale of measurement. The assumption for a t-test is that the scale of measurement applied to the data collected follows a continuous or ordinal scale, such as the scores for an IQ test.
+
+2. The second assumption made is that of a simple random sample, that the data is collected from a representative, randomly selected portion of the total population.
+
+3. The third assumption is the data, when plotted, results in a normal distribution, bell-shaped distribution curve.
+
+4. The fourth assumption is a reasonably large sample size is used. A larger sample size means the distribution of results should approach a normal bell-shaped curve.
+
+5. The final assumption is homogeneity of variance. Homogeneous, or equal, variance exists when the standard deviations of samples are approximately equal.
+
+
+Next, we introduce the concept of effect size. In general, effect size represents the magnitude of the difference between population means. In this context, the effect size is, roughly, the true difference between gene expression in healthy brains and AD brains. The formal definition of effect size for differences in means follows.
+$$d={|\mu_1-\mu_2|\over\sigma}$$
+ $\sigma$ represents population standard deviation.
+
+We now analyze the relationship between effect size and statistical power for the given sample size in the project. The definition of power is the probability of not making a Type II error. The power of a hypothesis test is between 0 and 1; if the power is close to 1, the hypothesis test is very good at detecting a false null hypothesis. A typically accepted power level is set at 0.8, but may be set to reach the researchers needs.
+
+Below, we create a power curve when sample sizes are 2 for healthy group and 5 for Alzheimer group. This plot summarizes the relationship between effect size and power in the setting of Christina's research. From the plot, we can see that the power of test will increase as the effect size increases. We see that even if the effect size is at the maximum value of 1, the power of the test falls around 0.165. This is far from generally accepted level of 0.8. 
+
+```{r, echo=FALSE, message=FALSE}
+# Generate power calculations
+ptab <- cbind(NULL, NULL)
+for (i in seq(0, 1, length.out = 200)) {
+  pwrt1 <- pwr.t2n.test(
+    n1 = 2, n2 = 5,
+    sig.level = 0.05, power = NULL,
+    d = i, alternative = "two.sided"
+  )
+
+  ptab <- rbind(ptab, cbind(pwrt1$d, pwrt1$power))
+}
+
+ptab <- cbind(seq_len(nrow(ptab)), ptab)
+
+colnames(ptab) <- c("id", "effect size", "power")
+
+# get data into right format for ggplot2
+temp <- ptab %>%
+  as.data.frame()
+h <- 0.16488046
+# plot
+myplot1 <- ggplot(temp) +
+  geom_line(aes(x = temp$`effect size`, y = temp$power), size = 1.5) +
+  geom_hline(yintercept = h, linetype = "dashed", color = "red", size = 1.5) +
+  xlab("Effect size") + ylab("Power") + scale_y_continuous(breaks = c(0.05, 0.075, 0.1, 0.125, 0.15, 0.165, 0.175)) +ggtitle("Maximum power given 2 treatment data and 5 control data")+
+  theme_classic()
+myplot1
+```
+
+We should note, of course, that the effect size we select is _not_ based on any previous research. It is possible to use either larger or smaller value of effect size to conduct this power analysis which will change the conclusions of this analysis. With this said, however, even if the true differences between healthy brains and AD brain's gene expression is significantly large, this test will not be powerful enough to have some chances of obtaining a true signal.
+
+Next, we look to determine an adequate sample size for this test to be powerful enough to detect a difference between healthy and AD brains. Below is a series of three power curves. From this plot, we can see that in order to achieve a power of the generally accepted value of 0.8 with significance level $\alpha = 0.05$ and large effect size of 0.8, we would still require at minimum 25 samples. Also, if the effect size has a lower value, say 0.5, we will require more than 50 samples for our test to detect a difference in these gene expressions. Therefore, this experiment would require additional data to ensure a meaningful analysis. 
+
+```{r echo=FALSE}
+# Generate power calculations
+ptab1 <- cbind(NULL)
+ptab2 <- cbind(NULL)
+ptab3 <- cbind(NULL)
+for (i in seq(2, 50, by = 1)) {
+  pwrt1 <- pwr.t2n.test(
+    n1 = i, n2 = i,
+    sig.level = 0.05, power = NULL,
+    d = 0.2, alternative = "two.sided"
+  )
+  ptab1 <- rbind(ptab1, pwrt1$power)
+}
+
+for (i in seq(2, 50, by = 1)) {
+  pwrt2 <- pwr.t2n.test(
+    n1 = i, n2 = i,
+    sig.level = 0.05, power = NULL,
+    d = 0.5, alternative = "two.sided"
+  )
+  ptab2 <- rbind(ptab2, pwrt2$power)
+}
+
+for (i in seq(2, 50, by = 1)) {
+  pwrt3 <- pwr.t2n.test(
+    n1 = i, n2 = i,
+    sig.level = 0.05, power = NULL,
+    d = 0.8, alternative = "two.sided"
+  )
+  ptab3 <- rbind(ptab3, pwrt3$power)
+}
+
+n <- seq(2, 50, by = 1)
+
+ptab <- cbind(n, ptab1, ptab2, ptab3)
+
+colnames(ptab) <- c("n", "effect = 0.2", "effect = 0.5", "effect = 0.8")
+
+# get data into right format for ggplot2
+plot1 <- ptab %>%
+  as.data.frame()
+
+# plot
+myplot <- ggplot(plot1) +
+  geom_line(aes(x = n, y = plot1$`effect = 0.2`, colour = "darkblue"), size = 1.5) +
+  geom_line(aes(x = n, y = plot1$`effect = 0.5`, colour = "red"), size = 1.5) +
+  geom_line(aes(x = n, y = plot1$`effect = 0.8`, colour = "green"), size = 1.5) +
+  scale_color_discrete(name = "Effective size", labels = c("effect = 0.2", "effect = 0.8", "effect = 0.5")) +
+  geom_hline(yintercept = 0.8, linetype = "dashed", color = "purple", size = 1.5) +
+  ylab("Power") + scale_y_continuous(breaks = seq(0, 1, by = 0.2)) + ggtitle("Two sample T test with different effect sizes") + xlab("Group size")+
+  theme_classic()
+myplot
+```
+
+
+
+## 4. New Trend
+
+---
+
+### 4.1 P-hacking
+
+#### Don'ts
+- Don’t base your conclusions solely on whether an association or effect was found to be “statistically significant” (i.e., the pvalue passed some arbitrary threshold such as p < 0.05).
+- Don’t believe that an association or effect exists just because it was statistically significant.
+- Don’t believe that an association or effect is absent just because it was not statistically significant.
+- Don’t believe that your p-value gives the probability that chance alone produced the observed association or effect or the probability that your test hypothesis is true.
+- Don’t conclude anything about scientific or practical importance based on statistical significance.
+
+#### 0.049 & 0.051
+
+
+### 4.2 Dos
+
+- “ATOM"
+  - Accept uncertainty
+  - Be thoughtful
+  - Be open
+  - Be modest
+
+- New Methods
+
+- Consider more factors: field, problem, sample size, effect size
+
+- Other method: Bayesian Statistics, Causal Inference
